@@ -119,12 +119,11 @@
 
 
 
-
 ;;;Grammar tokenization
 ;;By the book according to the RFC (rfc 5234).
 
 (defun alternative-regexp (alts)
-  (let ((ret "\\(?:"))
+  (let ((ret "\\("))
     (mapcar (lambda (alt) (setq ret (concat ret alt "\\|"))) alts)
     (aset ret (- (length ret) 1) #x29)
     ret))
@@ -135,8 +134,8 @@
 (setq def-symbol (alternative-regexp (list "=" "=/")))
 (defun num-opt-arg (NUM-TYPE)
       (concat (alternative-regexp
-	       (list (concat "\\(?:-" NUM-TYPE "+\\)")
-		     (concat "\\(?:\\." NUM-TYPE "+\\)+"))) "?"))
+	       (list (concat "\\(-" NUM-TYPE "+\\)")
+		     (concat "\\(\\." NUM-TYPE "+\\)+"))) "?"))
 
 ;;;Core rules
 (setq ALPHA (alternative-regexp (list lower-case upper-case)))
@@ -157,15 +156,15 @@
 (setq VCHAR "[\x21-\x7e]")
 (setq WSP (alternative-regexp (list SP HTAB)))
 
-;;;Lexical objects
-;;note that "c-wsp" from the standard will be avoided by the 'first pass operations'
+;;;Terminal objects as defined by RFC 5234
 ;;
 
-(setq rulename (concat ALPHA (alternative-regexp (list ALPHA DIGIT "-")) "*"))
+(setq rulename (concat ALPHA (alternative-regexp (list ALPHA DIGIT "-")) "*")) 
 (setq abnf-comment (concat ";" (alternative-regexp (list WSP VCHAR)) "*" CRLF))
+
 (setq c-nl (alternative-regexp (list abnf-comment CRLF)))
-(setq c-wsp (alternative-regexp (list WSP (concat "\\(?:" c-nl WSP "\\)"))))
-(setq defined-as (concat WSP "*" def-symbol WSP "*"))
+(setq c-wsp (alternative-regexp (list WSP (concat "\\(" c-nl WSP "\\)"))))
+(setq defined-as (concat WSP "*" def-symbol WSP "*")) 
 (setq repeat (alternative-regexp (list (concat DIGIT "+") (concat DIGIT "*\\*" DIGIT "*"))))
 (setq char-val (concat DQUOTE (alternative-regexp (list "[\x20-\x21]"
 							"[\x23-\x7e]")) "*" DQUOTE))
@@ -175,74 +174,135 @@
 (setq num-val (concat "%" (alternative-regexp (list bin-val dec-val hex-val))))
 (setq prose-val (concat "<" (alternative-regexp (list "[\x20-\x3d]" "[\x3f-\x7e]")) "*>"))
 
-;;;Lexical Analysis
-;;The end of a rule declaration can be found difinitivel by the
-;;lexical form CRLF[^ WSP CRLF], that is, a newline followed by
-;;something that is not a newline.
+;;;Token classes
+;;luckily these are all mutually exclusive, so can be attacked blindly
+;;
+
+;;rulename
+;;comment
+;;CRLF
+;;WSP
+;;asterisk "*"
+;;slash "/"
+;;open-paren "("
+;;close-paren ")"
+;;open-bracket "["
+;;close-bracket "]"
+;;char-val
+;;num-val
+;;prose-val
+;;defined-as
+
+(defun testcond (n)
+  (cond
+   ((= n 1) "one")
+   (t "otherwise")))
 
 (defun my-err (what where)
   (error (concat "expected " what " at: " (number-to-string where))))
 
-(defun lex-rulename (rules start)
-  (let ((match (string-match rulename rules start)))
-    (if (not (= match start)) (my-err "rulename" start)
-      (cons (substring rules start (+ start (match-end 0))) (match-end 0)))))
+(defun testn (n start end rules what)
+  (if (and (not (eq n start)) (not (eq end (length rules)))) (my-err what start)))
 
-(defun lex-defined-as (rules start)
-  (let 
+(testn 4 3 3 "foo." "bar")
 
-(setq end-of-rule (alternative-regexp
-		   (list (concat CRLF "[^" WSP CRLF "]"))))
+(defun lex-next (rules start)
+  (let ((cur-char (aref rules start)))
+    (cond
+     ((eq cur-char #x28) (cons (cons 'Topen-paren "(") (+ 1 start)))
+     ((eq cur-char #x29) (cons (cons 'Tclose-paren ")") (+ 1 start)))
+     ((eq cur-char #x5b) (cons (cons 'Topen-brace"[") (+ 1 start)))
+     ((eq cur-char #x5d) (cons (cons 'Tclose-brace"]") (+ 1 start)))
+     ((eq cur-char #x2f) (cons (cons 'Tslash "/") (+ 1 start)))
+     ((eq cur-char #x2a) (cons (cons 'Tasterisk "*") (+ 1 start)))
+     ((eq cur-char #x3d) (let ((n (string-match def-symbol rules start))) ;;%
+			   (testn n start (match-end 0) rules "def-symbol")
+			   (cons (cons 'Tdef-symbol (match-string 0 rules)) (match-end 0))))
+     ((eq cur-char #x25) (let ((n (string-match num-val rules start))) ;;%
+			   (testn n start (match-end 0) rules "num-val")
+			   (cons (cons 'Tnum-val (match-string 0 rules)) (match-end 0))))
+     ((eq cur-char #x22) (let ((n (string-match char-val rules start))) ;;"
+			   (testn n start (match-end 0) rules "char-val")
+			   (cons (cons 'Tchar-val (match-string 0 rules)) (match-end 0))))
+     ((eq cur-char #x3c) (let ((n (string-match prose-val rules start))) ;;<
+			   (testn n start (match-end 0) rules "prose-val")
+			   (cons (cons 'Tprose-val (match-string 0 rules)) (match-end 0))))
+     ((eq cur-char #x3b) (let ((n (string-match abnf-comment rules start))) ;;;
+			   (testn n start (match-end 0) rules "abnf-comment")
+			   (cons (cons 'Tabnf-comment (match-string 0 rules)) (match-end 0))))
+     ((or (eq cur-char #x20)
+	  (eq cur-char #x09)) (let ((n (string-match WSP rules start))) ;;space
+				(testn n start (match-end 0) rules "WSP")
+				(cons (cons 'TWSP (match-string 0 rules)) (match-end 0))))
+     ((or (eq cur-char #x0d)
+	  (eq cur-char #x0a)) (let ((n (string-match CRLF rules start))) ;;CRLF
+				(testn n start (match-end 0) rules "CRLF")
+				(cons (cons 'TCRLF (match-string 0 rules)) (match-end 0))))
+     (t (let ((n (string-match rulename rules start))) ;;rulename
+	  (if (not (eq n start)) (my-err "rulename" start)
+	    (cons (cons 'Trulename (match-string 0 rules)) (match-end 0))))))))
 
-(defun get-end-of-rule (rule-str start)
-  (let ((end (string-match end-of-rule rule-str start)))
-    (if end end (length rule-str))))
+(let ((rules "rule = %b101 foo bar / balls ( something *[stuff]) ; comment\n" )
+      (lex)
+      (cur 0))
+  (while (< cur (length rules))
+    (let ((next (lex-next rules cur)))
+      (setq lex (cons (car next) lex))
+      (setq cur (cdr next))))
+  (reverse lex))
 
-(defun get-rule (rule-str start)
-  (let ((rule-end (get-end-of-rule rule-str start)))
-    (apply 'concat (split-string
-		     (substring rule-str start rule-end) CRLF t ";.*"))))
+(string "foo" "\n")
 
-;;(cons 'a (cons 'b (cons 'c nil)))
+(let ((rules "rule = foo bar / balls ( something *[stuff]) ; comment" ))
+  (string-match rulename rules 0)
+  (match-string 0 rules))
 
-(let ((rule (get-rule rule-str 0)))
-  (string-match rulename rule)
-  (match-end 0))
+(cdr (lex-next "rule = foo bar / balls ( something *[stuff]) ; comment" 0))
 
-(defun lex-rule (rule-str)
-  (if (equal 0 (length rule-str)) ""
-    (let ((name-pos (string-match rulename rule-str)))
-      (if (equla name-pos 0)
-	(cons (substring rule-str 0 (match-end 0))
-	      (lex-
 
-  
-(get-rule rule-str 0)
+;;;Lexical Analysis
 
-(get-end-of-rule rule-str 59)
+	     (defun lex-rulename (rules start)
+	       (string-match rulename rules)
+	       (if (not (= (match-beginning 0) start)) (my-err "rulename" start)
+		 (cons '__RULENAME (match-string 0 rules))))
 
-(apply 'concat (split-string (get-rule rule-str 0) CRLF t ";.*"))
+	     (defun lex-defined-as (rules start)
+	       (string-match defined-as rules start)
+	       (if (not (= (match-beginning 0) start)) (my-err "defined-as" start)
+		 (cons '__DEFINED-AS (match-string 0 rules))))
+
+	     (let ((rules "foobar = get lost punk"))
+	       (let ((rulename-lex (lex-rulename rules 0)))
+		 (let ((def-lex (lex-defined-as rules (match-end 0))))
+		   def-lex)))
+
+	     (lex-defined-as 
+
+
+	      (setq end-of-rule (alternative-regexp
+				 (list (concat CRLF "[^" WSP CRLF "]"))))
 
 ;;;<testing>
 
 
-(string-match abnf-comment (get-rule rule-str 0))
+	      (string-match abnf-comment (get-rule rule-str 0))
 
-(setq rule-str
-"rule =  rulename defined-as
-        elements c-nl ; rule 
+	      (setq rule-str
+		    "rule =  rulename defined-as
+	elements c-nl ; rule 
 
 char-val =  DQUOTE *(%x20-21 / %x23-7E) DQUOTE
-              ; quoted string of SP and VCHAR
-              ;  without DQUOTE
+	      ; quoted string of SP and VCHAR
+	      ;  without DQUOTE
 ")
 
-(defun my-mover (n)
-  (interactive "nhow far?")
-  (goto-char (+ (point) n)))
+	      (defun my-mover (n)
+		(interactive "nhow far?")
+		(goto-char (+ (point) n)))
 
-(let ((rule-str (get-register #x67)))
-  (string-match end-of-rule rule-str))
+	      (let ((rule-str (get-register #x67)))
+		(string-match end-of-rule rule-str))
 
 ;;;</testing>
 
@@ -267,207 +327,207 @@ char-val =  DQUOTE *(%x20-21 / %x23-7E) DQUOTE
 
 ;;;Lexical testing...
 
-(let ((str "stuff.. d8-9 <rule-name...\"\" ~ho>"))
-  (string-match prose-val str)
-  (match-string 0 str))
+	      (let ((str "stuff.. d8-9 <rule-name...\"\" ~ho>"))
+		(string-match prose-val str)
+		(match-string 0 str))
 
-(let ((str "ax%b100.1010-100.1"))
-  (string-match num-val str)
-  (match-string 0 str))
+	      (let ((str "ax%b100.1010-100.1"))
+		(string-match num-val str)
+		(match-string 0 str))
 
-(let ((str "axbx%d100.1010.100-1"))
-  (string-match num-val str)
-  (match-string 0 str))
+	      (let ((str "axbx%d100.1010.100-1"))
+		(string-match num-val str)
+		(match-string 0 str))
 
-(let ((str "axbx%x100-d1010-100.1"))
-  (string-match num-val str)
-  (match-string 0 str))
+	      (let ((str "axbx%x100-d1010-100.1"))
+		(string-match num-val str)
+		(match-string 0 str))
 
-(string-match bin-val "foo1* b0ar=s")
+	      (string-match bin-val "foo1* b0ar=s")
 
-(string-match "a\\{2,3\\}b" "ba ab aaaab")
-(string-match "[\x20-\x2d]" "fo(o - bar")
-(string-match "1\\*" "foo1* bar=s")
-
-
-(let ((str " 0name-and-stuf __["))
-  (string-match rulename str)
-  (match-string 0 str))
+	      (string-match "a\\{2,3\\}b" "ba ab aaaab")
+	      (string-match "[\x20-\x2d]" "fo(o - bar")
+	      (string-match "1\\*" "foo1* bar=s")
 
 
-(string-match ALPHA "0123abc")
-(string-match BIT "a2100")
-(string-match CR "a21\n\r00")
-(string-match CRLF "a21\n\r\r\n00")
-(string-match CTL "a\x00\x32\x31\n\r\r\n00")
-(string-match DIGIT "a\x00\x32\x31\n\r\r\n00")
-(string-match DQUOTE "\"foobar\"")
-(string-match HEXDIG " x8fa")
-(string-match HTAB "bar	foo")
-(string-match LF "a21\r\n00")
+	      (let ((str " 0name-and-stuf __["))
+		(string-match rulename str)
+		(match-string 0 str))
+
+
+	      (string-match ALPHA "0123abc")
+	      (string-match BIT "a2100")
+	      (string-match CR "a21\n\r00")
+	      (string-match CRLF "a21\n\r\r\n00")
+	      (string-match CTL "a\x00\x32\x31\n\r\r\n00")
+	      (string-match DIGIT "a\x00\x32\x31\n\r\r\n00")
+	      (string-match DQUOTE "\"foobar\"")
+	      (string-match HEXDIG " x8fa")
+	      (string-match HTAB "bar	foo")
+	      (string-match LF "a21\r\n00")
 
 
 ;;;Grammar Modification (conversion to CNF)
-;;A double underscore will prefix Non-Terminals to introduce new symbols, so should not be used
-;;in the specification of a grammar...
-;;
-;;This algorithm is basically ripped from the wikipedia page:
-;;https://en.wikipedia.org/wiki/Chomsky_normal_form
+	      ;;A double underscore will prefix Non-Terminals to introduce new symbols, so should not be used
+	      ;;in the specification of a grammar...
+	      ;;
+	      ;;This algorithm is basically ripped from the wikipedia page:
+	      ;;https://en.wikipedia.org/wiki/Chomsky_normal_form
 
-;;Here, a list of production rules from the read grammar is passed to be converted.  The rules will be of the form (Head (list Rule1
+	      ;;Here, a list of production rules from the read grammar is passed to be converted.  The rules will be of the form (Head (list Rule1
 
-;;It is assumed that the first production rule in the grammar is from
-;;the Start symbol
-(defun CNF-START (G)
-  (let ((terminal-rules (car G))
-	(production-rules (cdr G))
-	(start-symbol (car (cdr G))))
-    (cons terminal-rules (cons (cons "__S" start-symbol) production-rules))))
+	      ;;It is assumed that the first production rule in the grammar is from
+	      ;;the Start symbol
+	      (defun CNF-START (G)
+		(let ((terminal-rules (car G))
+		      (production-rules (cdr G))
+		      (start-symbol (car (cdr G))))
+		  (cons terminal-rules (cons (cons "__S" start-symbol) production-rules))))
 
-;;Since non-terminals are held as strings in the computer, it is
-;;assumed that every terminal symbol T appearing in a production rule
-;;is of the form "__LITERAL__T".  For example, a colon (";") would be
-;;of the form "__LITERAL__;"
+	      ;;Since non-terminals are held as strings in the computer, it is
+	      ;;assumed that every terminal symbol T appearing in a production rule
+	      ;;is of the form "__LITERAL__T".  For example, a colon (";") would be
+	      ;;of the form "__LITERAL__;"
 
-(substring "__LITERAL__" 0 (length "__LITERAL__"))
+	      (substring "__LITERAL__" 0 (length "__LITERAL__"))
 
-(defun CNF-TERM (G)
-  (let ((terminal-rules (car G))
-	(production-rules (cdr G))
-	(new-rules '())
-	(prefix "__LITERAL__")
-	(plength (length  "__LITERAL__")))
-    (mapcar (lambda (rule)
-	      
+	      (defun CNF-TERM (G)
+		(let ((terminal-rules (car G))
+		      (production-rules (cdr G))
+		      (new-rules '())
+		      (prefix "__LITERAL__")
+		      (plength (length  "__LITERAL__")))
+		  (mapcar (lambda (rule)
+			    
 
 ;;;Testing
-(get-partition-product my-rules curM 1 2)
+			    (get-partition-product my-rules curM 1 2)
 
-(calc-cell my-rules curM 1 2)
+			    (calc-cell my-rules curM 1 2)
 
-(lift-rules-x my-rules (get-partition-product my-rules curM 1 2))
+			    (lift-rules-x my-rules (get-partition-product my-rules curM 1 2))
 
-my-rules
-curM
-;;
+			    my-rules
+			    curM
+			    ;;
 
-(car (get-cell curM 1 2))
+			    (car (get-cell curM 1 2))
 
-(car (get-cell curM 2 3))
+			    (car (get-cell curM 2 3))
 
-(cartesian-product (get-cell curM 1 2) (get-cell curM 1 2))
+			    (cartesian-product (get-cell curM 1 2) (get-cell curM 1 2))
 
-(lift-rules-x my-rules (list (cons 'A 'A)))
+			    (lift-rules-x my-rules (list (cons 'A 'A)))
 
-(lift-rules-p my-rules (cons 'A 'A))
+			    (lift-rules-p my-rules (cons 'A 'A))
 
-(let ((a '(1 2 3))) (setq a (append a '(2 3 4))) a)
-
-
-
-
-(setq my-rules '((S (A V-)) (S (A B)) (V- (M B)) (M (A B)) (M (A V-))))
-(setq my-gram (cons my-term-rs my-rules))
-
-(setq my-rules (list (cons "S" (cons "A" "B")) (cons "A" (cons "A" "A")) (cons "B" (cons "A" "B"))))
-
-(setq my-term-rs (list (cons "A" (aref "a" 0)) (cons "B" (aref "b" 0))))
-
-(setq my-gram (cons my-term-rs my-rules))
-
-(setq curM (get-cyk-matrix my-gram "aab"))
+			    (let ((a '(1 2 3))) (setq a (append a '(2 3 4))) a)
 
 
 
-(aref (aref (blank-cyk-matrix (length "aaaab")) 0) 0)
 
-(if (get-cell (blank-cyk-matrix 5) 1 5) "foo" "bar")
+			    (setq my-rules '((S (A V-)) (S (A B)) (V- (M B)) (M (A B)) (M (A V-))))
+			    (setq my-gram (cons my-term-rs my-rules))
 
-(get-cell (blank-cyk-matrix 5) 1 1)
+			    (setq my-rules (list (cons "S" (cons "A" "B")) (cons "A" (cons "A" "A")) (cons "B" (cons "A" "B"))))
 
-(let ((M (blank-cyk-matrix (length my-word))))
-  (aset M (- (length my-word) 1) (lift-terminals (car my-gram) my-word))
-  M)
+			    (setq my-term-rs (list (cons "A" (aref "a" 0)) (cons "B" (aref "b" 0))))
 
-(let ((M (blank-cyk-matrix (length my-word))))
-  (aset M (- (length my-word) 1) (lift-terminals (car my-gram) my-word))
-  (get-prod-bases (cdr my-gram) M 1 2)
-  M)
+			    (setq my-gram (cons my-term-rs my-rules))
 
-(cdr my-gram)
-
-(setq my-M [[nil] [(A) (B)]])
-
-(let ((A (make-vector 3 nil)))
-  (aset A 1 [1 2 3])
-  A)
-
-(if (not my-M) "foo" "bar")
+			    (setq curM (get-cyk-matrix my-gram "aab"))
 
 
-(lift-rules-x my-rules (get-partition-product my-rules my-M 1 2))
 
-(calc-cell my-rules my-M 1 2)
+			    (aref (aref (blank-cyk-matrix (length "aaaab")) 0) 0)
 
-(set-cell my-M 1 2 ())
+			    (if (get-cell (blank-cyk-matrix 5) 1 5) "foo" "bar")
 
-(setq my-M [ [nil] [nil nil] [(A) (A) (B)] ])
+			    (get-cell (blank-cyk-matrix 5) 1 1)
 
-(get-prod-bases my-rules my-M 1 3)
+			    (let ((M (blank-cyk-matrix (length my-word))))
+			      (aset M (- (length my-word) 1) (lift-terminals (car my-gram) my-word))
+			      M)
 
-my-M
+			    (let ((M (blank-cyk-matrix (length my-word))))
+			      (aset M (- (length my-word) 1) (lift-terminals (car my-gram) my-word))
+			      (get-prod-bases (cdr my-gram) M 1 2)
+			      M)
 
-(car (cdr '((1 1) (2 2))))
+			    (cdr my-gram)
 
-;;(cartesian-product ((get-cell my-M 1 1) (get-cell my-M (+ 1 1) 2))
-(get-partition-product my-M 1 3)
+			    (setq my-M [[nil] [(A) (B)]])
 
+			    (let ((A (make-vector 3 nil)))
+			      (aset A 1 [1 2 3])
+			      A)
 
-;;(lift-terminals '((A "a") (A "A") (B "b") (B "B")) "abBAa") ;;(substring "abBAa" 0 1))
-;;(equal "a" (substring "abc" 2 1))
-
-;;(substring "abc" 2 3)
-
-;;(length "abdc")
-
-;;(setq my-M [ ["1-3"] ["1-2" "2-3"] ["1-1" "2-2" "3-3"] ])
-;;(get-cell my-M 2 2)
-;;(setq my-M [[(a b) (c d)] [(e f)] []])
-
-;;(set-cell my-M 1 2 "foo")
+			    (if (not my-M) "foo" "bar")
 
 
-;;current testing:
+			    (lift-rules-x my-rules (get-partition-product my-rules my-M 1 2))
 
-(lift-rules-p ps '(A A))
-(lift-rules-nts ps '((A) (A) (B) (C)))
+			    (calc-cell my-rules my-M 1 2)
 
-;;grammar:
+			    (set-cell my-M 1 2 ())
 
-(setq ps '((S . (A B)) (S . (A A))
-	   (A . (A A)) (A . (A C))
-	   (B . (A A)) (B . (B C))
-	   (C . (C C))))
+			    (setq my-M [ [nil] [nil nil] [(A) (A) (B)] ])
 
-;;
+			    (get-prod-bases my-rules my-M 1 3)
 
-(setq PRules '((A . (a a)) (A- . (a a)) (B . (b b)) (BA . (a b))(C . (c c))))
+			    my-M
 
-(lift-rules-p PRules '(a a))
-(car (cartesian-product '(a b c) '(a c)))
-(equal '(a a) (list 'a 'a))
+			    (car (cdr '((1 1) (2 2))))
 
-(lift-rules-x PRules (cartesian-product '(a b c) '(a c)))
-
-(lift-rules-nts PRules '((a) (a) (a) (b) (b) (b) (c)))
-
-(let ((M (make-vector 3 nil)))
-  (aset M 0 [1 2 3])
-  (aset M 1 [4 5 6])
-  (aset M 2 [7 8 9])
-  (aset (aref M 1) 1 0)
-  M)
+			    ;;(cartesian-product ((get-cell my-M 1 1) (get-cell my-M (+ 1 1) 2))
+			    (get-partition-product my-M 1 3)
 
 
-(setq split-height-threshold nil)
-(setq split-width-threshold 0)
+			    ;;(lift-terminals '((A "a") (A "A") (B "b") (B "B")) "abBAa") ;;(substring "abBAa" 0 1))
+			    ;;(equal "a" (substring "abc" 2 1))
+
+			    ;;(substring "abc" 2 3)
+
+			    ;;(length "abdc")
+
+			    ;;(setq my-M [ ["1-3"] ["1-2" "2-3"] ["1-1" "2-2" "3-3"] ])
+			    ;;(get-cell my-M 2 2)
+			    ;;(setq my-M [[(a b) (c d)] [(e f)] []])
+
+			    ;;(set-cell my-M 1 2 "foo")
+
+
+			    ;;current testing:
+
+			    (lift-rules-p ps '(A A))
+			    (lift-rules-nts ps '((A) (A) (B) (C)))
+
+			    ;;grammar:
+
+			    (setq ps '((S . (A B)) (S . (A A))
+				       (A . (A A)) (A . (A C))
+				       (B . (A A)) (B . (B C))
+				       (C . (C C))))
+
+			    ;;
+
+			    (setq PRules '((A . (a a)) (A- . (a a)) (B . (b b)) (BA . (a b))(C . (c c))))
+
+			    (lift-rules-p PRules '(a a))
+			    (car (cartesian-product '(a b c) '(a c)))
+			    (equal '(a a) (list 'a 'a))
+
+			    (lift-rules-x PRules (cartesian-product '(a b c) '(a c)))
+
+			    (lift-rules-nts PRules '((a) (a) (a) (b) (b) (b) (c)))
+
+			    (let ((M (make-vector 3 nil)))
+			      (aset M 0 [1 2 3])
+			      (aset M 1 [4 5 6])
+			      (aset M 2 [7 8 9])
+			      (aset (aref M 1) 1 0)
+			      M)
+
+
+			    (setq split-height-threshold nil)
+			    (setq split-width-threshold 0)
