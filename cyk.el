@@ -1,3 +1,5 @@
+;;on branch track-matches
+
 ;;need CNF to make sure we don't get confused..
 
 ;;;Lifting functions
@@ -130,6 +132,7 @@
 ;;my helper rules
 (setq lower-case "[\x61-\x7a]")
 (setq upper-case "[\x41-\x5a]")
+(setq def-symbol (alternative-regexp (list "=" "=/")))
 (defun num-opt-arg (NUM-TYPE)
       (concat (alternative-regexp
 	       (list (concat "\\(?:-" NUM-TYPE "+\\)")
@@ -162,7 +165,7 @@
 (setq abnf-comment (concat ";" (alternative-regexp (list WSP VCHAR)) "*" CRLF))
 (setq c-nl (alternative-regexp (list abnf-comment CRLF)))
 (setq c-wsp (alternative-regexp (list WSP (concat "\\(?:" c-nl WSP "\\)"))))
-(setq defined-as (concat WSP "*" (alternative-regexp (list "=" "=/")) WSP "*"))
+(setq defined-as (concat WSP "*" def-symbol WSP "*"))
 (setq repeat (alternative-regexp (list (concat DIGIT "+") (concat DIGIT "*\\*" DIGIT "*"))))
 (setq char-val (concat DQUOTE (alternative-regexp (list "[\x20-\x21]"
 							"[\x23-\x7e]")) "*" DQUOTE))
@@ -176,6 +179,18 @@
 ;;The end of a rule declaration can be found difinitivel by the
 ;;lexical form CRLF[^ WSP CRLF], that is, a newline followed by
 ;;something that is not a newline.
+
+(defun my-err (what where)
+  (error (concat "expected " what " at: " (number-to-string where))))
+
+(defun lex-rulename (rules start)
+  (let ((match (string-match rulename rules start)))
+    (if (not (= match start)) (my-err "rulename" start)
+      (cons (substring rules start (+ start (match-end 0))) (match-end 0)))))
+
+(defun lex-defined-as (rules start)
+  (let 
+
 (setq end-of-rule (alternative-regexp
 		   (list (concat CRLF "[^" WSP CRLF "]"))))
 
@@ -195,8 +210,9 @@
   (match-end 0))
 
 (defun lex-rule (rule-str)
-  (let ((name-pos (string-match rulename rule-str)))
-    (if (equla name-pos 0)
+  (if (equal 0 (length rule-str)) ""
+    (let ((name-pos (string-match rulename rule-str)))
+      (if (equla name-pos 0)
 	(cons (substring rule-str 0 (match-end 0))
 	      (lex-
 
