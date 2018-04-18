@@ -41,7 +41,7 @@
 
 (defun cell-index (i j n)
   (let ((d (- j i)))
-  (cons (- (- n d) 1) (- (- j d) 1))))
+    (cons (- (- n d) 1) (- (- j d) 1))))
 
 (defun get-cell (M i j)
   (let ((i- (car (cell-index i j (length M))))
@@ -88,7 +88,7 @@
     (mapcar (lambda (rule)
 	      (message (concat "rule: "  " : " (number-to-string (cdr rule))))
 	      (if (equal (cdr rule) char) (setq ret (cons (car rule) ret))))
-	      terminal-rules)
+	    terminal-rules)
     ret))
 
 (defun lift-terminals (terminal-rules word)
@@ -133,9 +133,9 @@
 (setq upper-case "[\x41-\x5a]")
 (setq def-symbol (alternative-regexp (list "=" "=/")))
 (defun num-opt-arg (NUM-TYPE)
-      (concat (alternative-regexp
-	       (list (concat "\\(-" NUM-TYPE "+\\)")
-		     (concat "\\(\\." NUM-TYPE "+\\)+"))) "?"))
+  (concat (alternative-regexp
+	   (list (concat "\\(-" NUM-TYPE "+\\)")
+		 (concat "\\(\\." NUM-TYPE "+\\)+"))) "?"))
 
 ;;;Core rules
 (setq ALPHA (alternative-regexp (list lower-case upper-case)))
@@ -150,11 +150,11 @@
 (setq DQUOTE "\"")
 (setq HEXDIG (alternative-regexp (list DIGIT "[A-Fa-f]")))
 (setq HTAB "\x09")
-(setq LWSP (concat (alternative-regexp (list WSP (concat CRLF WSP))) "*"))
 (setq OCTET "[\x00-\xFF]")
 (setq SP "\x20")
 (setq VCHAR "[\x21-\x7e]")
 (setq WSP (alternative-regexp (list SP HTAB)))
+(setq LWSP (concat (alternative-regexp (list WSP (concat CRLF WSP))) "*"))
 
 ;;;Terminal objects as defined by RFC 5234
 ;;
@@ -198,13 +198,11 @@
    ((= n 1) "one")
    (t "otherwise")))
 
-(defun my-err (what where)
+(defun lex-err (what where)
   (error (concat "expected " what " at: " (number-to-string where))))
 
 (defun testn (n start end rules what)
-  (if (and (not (eq n start)) (not (eq end (length rules)))) (my-err what start)))
-
-(testn 4 3 3 "foo." "bar")
+  (if (and (not (eq n start)) (not (eq end (length rules)))) (lex-err what start)))
 
 (defun lex-next (rules start)
   (let ((cur-char (aref rules start)))
@@ -215,9 +213,9 @@
      ((eq cur-char #x5d) (cons (cons 'Tclose-brace"]") (+ 1 start)))
      ((eq cur-char #x2f) (cons (cons 'Tslash "/") (+ 1 start)))
      ((eq cur-char #x2a) (cons (cons 'Tasterisk "*") (+ 1 start)))
-     ((eq cur-char #x3d) (let ((n (string-match def-symbol rules start))) ;;%
-			   (testn n start (match-end 0) rules "def-symbol")
-			   (cons (cons 'Tdef-symbol (match-string 0 rules)) (match-end 0))))
+     ((eq cur-char #x3d) (let ((n (string-match def-symbol rules start))) ;;=
+			   (testn n start (match-end 0) rules "defined-as")
+			   (cons (cons 'Tdefined-as (match-string 0 rules)) (match-end 0))))
      ((eq cur-char #x25) (let ((n (string-match num-val rules start))) ;;%
 			   (testn n start (match-end 0) rules "num-val")
 			   (cons (cons 'Tnum-val (match-string 0 rules)) (match-end 0))))
@@ -239,9 +237,9 @@
 				(testn n start (match-end 0) rules "CRLF")
 				(cons (cons 'TCRLF (match-string 0 rules)) (match-end 0))))
      ((and (>= cur-char #x30)
-	  (<= cur-char #x39)) (let ((n (string-match (concat DIGIT "+") rules start))) ;;repetition
-				(testn n start (match-end 0) rules "repetition")
-				(cons (cons 'Trepetition (match-string 0 rules)) (match-end 0))))
+	   (<= cur-char #x39)) (let ((n (string-match (concat DIGIT "+") rules start))) ;;repetition
+				 (testn n start (match-end 0) rules "DIGITS")
+				 (cons (cons 'TDIGITS (match-string 0 rules)) (match-end 0))))
      (t (let ((n (string-match rulename rules start))) ;;rulename
 	  (testn n start (match-end 0) rules "rulename")
 	  (cons (cons 'Trulename (match-string 0 rules)) (match-end 0)))))))
@@ -256,6 +254,154 @@
 	(setq cur (cdr next))))
     (reverse lex)))
 
+(defun parse-err (what where)
+  (error (concat "expected " what " at: " (format "%s" where))))
+
+(defun parse-rulename (tokens)
+  (let ((tok (car (car tokens))))
+    (if (equal tok 'Trulename) (cons (car tokens) (cdr tokens))
+      (cons nil tokens))))
+
+(defun parse-defined-as (tokens)
+  (let ((tok (car (car tokens))))
+    (if (equal tok 'Tdefined-as) (cons (car tokens) (cdr tokens))
+      (cons nil tokens))))
+
+(defun parse-WSP (tokens)
+  (let ((tok (car (car tokens))))
+    (if (equal tok 'TWSP) (cons (car tokens) (cdr tokens))
+      (cons nil tokens))))
+
+(defun parse-DIGITS (tokens)
+  (let ((tok (car (car tokens))))
+    (if (equal tok 'TDIGITS) (cons (car tokens) (cdr tokens))
+      (cons nil tokens))))
+
+(defun parse-asterisk (tokens)
+  (let ((tok (car (car tokens))))
+    (if (equal tok 'Tasterisk) (cons (car tokens) (cdr tokens))
+      (cons nil tokens))))
+
+(defun parse-CRLF (tokens)
+  (let ((tok (car (car tokens))))
+    (if (equal tok 'TCRLF) (cons (car tokens) (cdr tokens))
+      (cons nil tokens))))
+
+(defun parse-abnf-comment (tokens)
+  (let ((tok (car (car tokens))))
+    (if (equal tok 'Tabnf-comment) (cons (car tokens) (cdr tokens))
+      (cons nil tokens))))
+
+(defun parse-c-nl (tokens)
+  (parse-alternatives (list 'parse-abnf-comment 'parse-CRLF) tokens))
+
+(defun parse-c-wsp (tokens)
+  (parse-alternatives (list
+		       'parse-WSP
+		       (lambda(x) (parse-concat (list 'parse-c-nl 'parse-WSP) x)))
+		      tokens))
+
+(defun parse-repeat-1 (tokens)
+  (parse-concat-meta (list 'parse-DIGITS 'parse-asterisk) tokens))
+
+(defun parse-repeat-2 (tokens)
+  (parse-concat-meta (list 'parse-asterisk 'parse-DIGITS) tokens))
+
+(defun parse-repeat-3 (tokens)
+  (parse-concat-meta (list 'parse-DIGITS 'parse-asterisk 'parse-DIGITS) tokens))
+
+(defun parse-repeat (tokens)
+  (parse-alternatives-meta
+   (list 'parse-repeat-3 'parse-repeat-2 'parse-repeat-1 'parse-DIGITS) tokens))
+
+(defun parse-element (tokens)
+  (parse-alternatives-meta
+   (list 'parse-rulename 'parse-group 'parse-option
+	 'parse-char-val 'parse-num-val 'parse-prose-val))) 
+
+(defun parse-char-val (tokens)
+  (let ((tok (car (car tokens))))
+    (if (equal tok 'Tchar-val) (cons (car tokens) (cdr tokens))
+      (cons nil tokens))))
+
+(defun parse-num-val (tokens)
+  (let ((tok (car (car tokens))))
+    (if (equal tok 'Tnum-val) (cons (car tokens) (cdr tokens))
+      (cons nil tokens))))
+
+(defun parse-prose-val (tokens)
+  (let ((tok (car (car tokens))))
+    (if (equal tok 'Tprose-val) (cons (car tokens) (cdr tokens))
+      (cons nil tokens))))
+
+(defun parse-element (tokens)
+  (parse-alternatives-meta (list 'parse-rulename 'parse-group 'parse-option
+				 'parse-char-val 'parse-num-val 'parse-prose-val)))
+
+;;;"meta-parsing"
+
+(defun parse-repetition-meta (what min max tokens)
+  (let ((i 0)
+	(ret)
+	(cur (cons t nil)))
+    (while (and (car cur) (or (< i max) (= max -1)))
+      (setq cur (funcall what tokens))
+      (if (car cur)
+	  (progn
+	    (setq ret (cons (car cur) ret))
+	    (setq tokens (cdr cur))
+	    (setq i (+ 1 i)))))
+    (if (< i min) (cons nil tokens)
+      (cons (reverse ret) tokens))))
+
+(defun parse-alternatives-meta (alternatives tokens)
+  (let ((cur (funcall (car alternatives) tokens)))
+    (if (car cur) cur
+      (if (cdr alternatives) (parse-alternatives (cdr alternatives) tokens)
+	(cons nil tokens)))))
+
+(defun parse-concat-meta (what tokens)
+  (let ((this-parse)
+	(toks tokens)
+	(fail nil))
+    (dolist (cur-parse what toks)
+      (let ((cur-res (funcall cur-parse toks)))
+	(setq toks (cdr toks))
+	(setq this-parse (cons (car cur-res) this-parse))
+	(if (not (car this-parse)) (setq fail t))))
+    (if fail (cons nil tokens)
+      ;;(debug)
+      (cons (reverse this-parse) toks))))
+
+
+
+;;;Testing
+(car (parse-repeat (abnf-lex "4*3 Fool") ))
+
+(parse-repetition 'parse-c-wsp 0 -1 (abnf-lex grammar))
+
+(list (cons 'TWSP " ") (cons 'TCRLF "\n"))
+
+(parse-alternatives (list 'parse-CRLF 'parse-WSP) (list (cons 'TWSP " ") (cons 'TCRLF "\n")))
+
+(cdr (parse-repetition
+      (lambda (tokens)
+	(parse-alternatives (list 'parse-c-nl 'parse-WSP) tokens))
+      0 -1 (abnf-lex grammar)))
+
+(cdr (parse-repetition
+      'parse-c-wsp 0 -1 (abnf-lex grammar)))
+
+(cdr (parse-repetition 'parse-CRLF 0 -1 (abnf-lex grammar)))
+
+(parse-CRLF (abnf-lex grammar))
+
+(format "%s" (abnf-lex grammar))
+
+(parse-rulename (abnf-lex grammar))
+
+
+
 (let ((rules "rule = %b101 foo bar / balls ( something *[stuff]) ; comment\n" )
       (lex)
       (cur 0))
@@ -265,36 +411,71 @@
       (setq cur (cdr next))))
   (reverse lex))
 
-(format "%s" (seq-filter (lambda (x) (not (or (eq (car x) 'TCRLF) (eq (car x) 'TWSP)))) (abnf-lex grammar)))
 
+
+
+(format "%s" (abnf-lex grammar))
 
 (setq grammar
-"
- elements       =  alternation *c-wsp
+      "
+   ;;man this is foobar
+    
 
-         c-wsp          =  WSP / (c-nl WSP)
+elements       =  alternation *c-wsp ; foo bar
+balls = foo bar ; another comment
+")
 
-         c-nl           =  comment / CRLF
-                                ; comment or newline
+(setq grammar
+      "
 
-         comment        =  \";\" *(WSP / VCHAR) CRLF
+elements       =  alternation *c-wsp
 
-         alternation    =  concatenation
-                           *(*c-wsp \"/\" *c-wsp concatenation)
+	 c-wsp          =  WSP / (c-nl WSP)
 
-         concatenation  =  repetition * (  1  * c-wsp  repetition  ) 
+	 c-nl           =  comment / CRLF
+				; comment or newline
+
+	 comment        =  \";\" *(WSP / VCHAR) CRLF
+
+	 alternation    =  concatenation
+			   *(*c-wsp \"/\" *c-wsp concatenation)
+
+	 concatenation  =  repetition * (  1  * c-wsp  repetition  ) 
 
 ")
 
 (abnf-lex grammar)
 
-         repetition     =  [repeat] element
+repetition     =  [repeat] element
 
-         repeat         =  1*DIGIT / (*DIGIT \"*\" *DIGIT)
+repeat         =  1*DIGIT / (*DIGIT \"*\" *DIGIT)
 
-         element        =  rulename / group / option /
-                           char-val / num-val / prose-val
+element        =  rulename / group / option /
+char-val / num-val / prose-val
 
-")
+")"
 
+(let (res)
+  (dolist (cur '("a" "b" "c" "d") res) (setq res (cons cur res))))
+
+(defun my-fact (n)
+  (if (< n 2) 1 (* n (my-fact (- n 1)))))
+
+(let (l)
+  (dolist (cur '(1 2 3 4 5 6 7 8 9 10 11) l)
+    (setq l (cons (my-fact cur) l))))
+ 
+(let ((ret '(1 2)))
+  (dolist (cur '(1 2 3 4 5 6 7 ))
+    (setq ret (cons (my-fact cur) ret))
+    (message (concat "foo: " (number-to-string cur))))
+  (if (> (car ret) 10) 100
+    ret))
+
+(let ((k 0))
+  (dolist (cur '(1 2 3 4) k) (setq k (+ k cur))))
+
+(let ((res)
+      (T 10.0))
+  (dotimes (cur T res) (setq res (cons (sin (/ (* cur pi) T)) res))))
 
